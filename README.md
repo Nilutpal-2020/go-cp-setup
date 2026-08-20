@@ -1,6 +1,20 @@
 # ⚡ Go Competitive Programming Workspace
 
-A high-performance, all-in-one competitive programming environment in Go with automated multi-case testing, fast I/O templates, stress testing, problem archiving, terminal shortcuts, and **automatic Notion database synchronization**.
+A high-performance, all-in-one competitive programming environment in Go with automated multi-case testing, fast I/O templates, stress testing, problem archiving, terminal shortcuts, **automatic Notion database synchronization**, and a **Web Dashboard ready for GitHub Pages**.
+
+---
+
+## 🌐 Live Web Dashboard (GitHub Pages)
+
+You can view, search, and track all your solved problems, algorithm templates, and statistics online!
+
+### To Enable GitHub Pages (1-Click):
+1. Go to your repository settings: [GitHub Pages Settings](https://github.com/Nilutpal-2020/go-cp-setup/settings/pages)
+2. Under **Build and deployment** ➔ **Branch**:
+   - Select **`main`** branch and **`/(root)`** folder.
+   - Click **Save**.
+3. Your live dashboard will be accessible at:
+   **`https://nilutpal-2020.github.io/go-cp-setup/`**
 
 ---
 
@@ -194,8 +208,6 @@ The workspace is configured to sync with your **DSA Tracker** Notion table:
    ```bash
    cpnotion
    ```
-
-*(Note: If you work offline or without a token, the tool works 100% locally without interruption).*
 
 ---
 
