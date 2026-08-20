@@ -1,6 +1,6 @@
 # ⚡ Go Competitive Programming Setup
 
-A fast, streamlined competitive programming environment in Go with automated multi-case testing, fast I/O templates, stress testing, archiving, and terminal shortcuts.
+A fast, streamlined competitive programming environment in Go with automated multi-case testing, fast I/O templates, stress testing, archiving, terminal shortcuts, and **automated Notion database sync**.
 
 ---
 
@@ -11,16 +11,41 @@ All commands are available directly from your terminal:
 | Shortcut | Description |
 | :--- | :--- |
 | `cpcd` | Jump to the competitive programming workspace root |
-| `cpnew <name>` | Scaffold a new problem with fast I/O template and sample tests |
+| `cpnew <name> [platform]` | Scaffold a new problem & auto-create entry in your Notion database |
 | `cprun` / `cptest` | Compile and run your solution against all test cases with colored diffs & time tracking |
 | `cpdebug` | Run tests with debug mode enabled (`DEBUG=1`) |
 | `cpadd [in] [out]` | Add a new custom test case to the active problem |
-| `cpbackup <platform> <name> [tags]` | Backup/archive the solution to `archive/<platform>/<date>_<name>` |
+| `cpbackup <platform> <name> [tags]` | Backup solution to `archive/` & update Notion entry to **Solved** |
 | `cplist` | List all archived problems with timestamps & tags |
 | `cpsearch <keyword>` | Search archived solutions by name, platform, date, or tag |
 | `cpstress [count]` | Stress test `active/main.go` against `active/brute.go` with `active/gen.go` |
+| `cpnotion` | Test connection to your Notion database and display properties |
+| `cpsync` | Manually sync current active problem to Notion |
+| `cpconfig` | View or update Notion API token and Database ID |
 | `cpopen` | Open `active/main.go` in your code editor |
 | `cphelp` | Display list of shortcuts and usage examples |
+
+---
+
+## 📑 Automated Notion Database Integration
+
+Your workspace is configured to sync with Notion Database:
+**[`19d7320760cc80d79115e483af59b450`](https://app.notion.com/p/19d7320760cc80d79115e483af59b450)**
+
+### 1-Time Setup (Authorize Notion)
+
+1. Go to [Notion Integrations](https://www.notion.so/profile/integrations) and click **New integration** (e.g. name it "CP Tool").
+2. Copy your **Internal Integration Secret** (starts with `ntn_` or `secret_`).
+3. Open your [Notion Database Page](https://app.notion.com/p/19d7320760cc80d79115e483af59b450), click the top-right `...` menu -> **Connections** -> **Connect to** -> select your integration ("CP Tool").
+4. Configure the token in your terminal:
+   ```bash
+   cptool config --notion-token secret_your_token_here
+   ```
+   *(or `export NOTION_API_KEY="secret_your_token_here"` in your shell)*
+5. Test the connection:
+   ```bash
+   cpnotion
+   ```
 
 ---
 
@@ -33,12 +58,12 @@ All commands are available directly from your terminal:
 │   └── cptool                  # Pre-compiled high-performance CP CLI runner
 ├── active/                     # Current problem workspace
 │   ├── main.go                 # Active solution file
-│   ├── problem.json            # Active problem metadata
+│   ├── problem.json            # Problem metadata & Notion page link
 │   └── tests/                  # Test input/output files
 │       ├── in1.txt, out1.txt
 │       └── in2.txt, out2.txt
 ├── archive/                    # Archived / backed up solutions
-│   ├── index.json              # Fast searchable index of all submissions
+│   ├── index.json              # Searchable index of all submissions
 │   ├── codeforces/
 │   ├── leetcode/
 │   ├── atcoder/
@@ -60,57 +85,26 @@ All commands are available directly from your terminal:
 
 ### 1. Start a New Problem
 ```bash
-cpnew 1000A_Watermelon
+cpnew 1000A_Watermelon codeforces
 ```
-This resets `active/` and loads the fast I/O template into `active/main.go`.
+- Sets up `active/main.go` from Fast I/O template.
+- Automatically creates an entry in your Notion database with `Status = "In Progress"`.
 
-### 2. Add Test Cases
-Paste sample inputs and outputs into `active/tests/in1.txt` and `active/tests/out1.txt`, or run:
+### 2. Add Test Cases & Run
 ```bash
 cpadd "8" "YES"
-```
-
-### 3. Run and Verify
-```bash
 cprun
 ```
-You'll see colorized results:
-```text
-✔ Compiled successfully (12ms)
-[PASS] Test #1 (2ms)
-[PASS] Test #2 (1ms)
 
-🎉 ALL 2 TEST(S) PASSED! 🎉
-```
-
-### 4. Backup & Archive
-Once accepted, archive your solution:
+### 3. Backup & Mark as Solved
 ```bash
 cpbackup codeforces 1000A_Watermelon "math,brute force"
 ```
-The solution and its tests will be copied to `archive/codeforces/YYYY-MM-DD_1000A_Watermelon` and indexed in `archive/index.json`.
-
-### 5. Search Past Solutions
-```bash
-cpsearch math
-```
-
----
-
-## ⚡ Fast I/O & Debugging in `main.go`
-
-- **FastScanner**: Read tokens and numbers with `in.NextInt()`, `in.Next()`, `in.NextInt64()`, `in.NextFloat64()`, `in.NextIntSlice(n)`.
-- **FastWriter**: Buffered output with `fmt.Fprintln(out, ...)` and deferred flush.
-- **Debug Logs**: `debug("val =", x)` only prints when run with `cpdebug` (or `DEBUG=1`), ensuring no time penalty on online judges.
+- Archives files to `archive/codeforces/YYYY-MM-DD_1000A_Watermelon`.
+- Automatically updates the Notion database status to **`Solved`** with attached tags!
 
 ---
 
 ## 🧠 Cheatsheet & Library
 
-Check [CHEATSHEET.md](file:///Users/nilutpal/Documents/coding/CHEATSHEET.md) and [templates/snippets.go](file:///Users/nilutpal/Documents/coding/templates/snippets.go) for:
-- Disjoint Set Union (DSU)
-- Binary Indexed Tree / Fenwick Tree
-- Segment Tree (Point updates & range queries)
-- Modular Inverse, Power, and $nCr \pmod p$ Combinatorics
-- Sieve of Eratosthenes & Smallest Prime Factor (SPF)
-- Dijkstra Shortest Path with `container/heap`
+Check [CHEATSHEET.md](file:///Users/nilutpal/Documents/coding/CHEATSHEET.md) and [templates/snippets.go](file:///Users/nilutpal/Documents/coding/templates/snippets.go) for pre-implemented algorithms.

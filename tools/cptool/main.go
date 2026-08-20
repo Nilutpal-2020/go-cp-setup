@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,17 +30,36 @@ const (
 	colorBold   = "\033[1m"
 )
 
+const defaultNotionDatabaseID = "19d7320760cc80d79115e483af59b450"
+
+type Config struct {
+	NotionToken      string `json:"notion_token"`
+	NotionDatabaseID string `json:"notion_database_id"`
+}
+
 type ArchiveEntry struct {
-	Platform    string    `json:"platform"`
-	ProblemName string    `json:"problem_name"`
-	Path        string    `json:"path"`
-	Date        string    `json:"date"`
-	Tags        []string  `json:"tags"`
-	Timestamp   time.Time `json:"timestamp"`
+	Platform     string    `json:"platform"`
+	ProblemName  string    `json:"problem_name"`
+	Path         string    `json:"path"`
+	Date         string    `json:"date"`
+	Tags         []string  `json:"tags"`
+	NotionPageID string    `json:"notion_page_id,omitempty"`
+	NotionURL    string    `json:"notion_url,omitempty"`
+	Timestamp    time.Time `json:"timestamp"`
+}
+
+type ProblemMetadata struct {
+	ProblemName  string    `json:"problem_name"`
+	CreatedAt    string    `json:"created_at"`
+	Platform     string    `json:"platform,omitempty"`
+	ProblemURL   string    `json:"problem_url,omitempty"`
+	Difficulty   string    `json:"difficulty,omitempty"`
+	NotionPageID string    `json:"notion_page_id,omitempty"`
+	NotionURL    string    `json:"notion_url,omitempty"`
+	Tags         []string  `json:"tags,omitempty"`
 }
 
 func getWorkspaceRoot() string {
-	// Try environment variable or traverse up from current dir or binary
 	if env := os.Getenv("CP_WORKSPACE"); env != "" {
 		return env
 	}
@@ -56,8 +77,67 @@ func getWorkspaceRoot() string {
 			curr = parent
 		}
 	}
-	// Fallback to default
 	return "/Users/nilutpal/Documents/coding"
+}
+
+func getConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	cfgDir := filepath.Join(home, ".config", "cptool")
+	_ = os.MkdirAll(cfgDir, 0755)
+	return filepath.Join(cfgDir, "config.json")
+}
+
+func loadConfig() Config {
+	cfg := Config{
+		NotionDatabaseID: defaultNotionDatabaseID,
+	}
+
+	data, err := os.ReadFile(getConfigPath())
+	if err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+
+	if envToken := os.Getenv("NOTION_API_KEY"); envToken != "" {
+		cfg.NotionToken = envToken
+	} else if envToken := os.Getenv("NOTION_TOKEN"); envToken != "" {
+		cfg.NotionToken = envToken
+	}
+
+	if envDb := os.Getenv("NOTION_DATABASE_ID"); envDb != "" {
+		cfg.NotionDatabaseID = envDb
+	}
+
+	if cfg.NotionDatabaseID == "" {
+		cfg.NotionDatabaseID = defaultNotionDatabaseID
+	}
+
+	return cfg
+}
+
+func saveConfig(cfg Config) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(getConfigPath(), data, 0644)
+}
+
+func getGitRepoURL() string {
+	cmd := exec.Command("git", "config", "--get", "remote.origin.url")
+	cmd.Dir = getWorkspaceRoot()
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	url := strings.TrimSpace(string(out))
+	url = strings.TrimSuffix(url, ".git")
+	if strings.HasPrefix(url, "git@github.com:") {
+		url = strings.Replace(url, "git@github.com:", "https://github.com/", 1)
+	}
+	return url
 }
 
 func main() {
@@ -84,6 +164,12 @@ func main() {
 		cmdSearch(args)
 	case "stress":
 		cmdStress(args)
+	case "config":
+		cmdConfig(args)
+	case "notion-status", "notion":
+		cmdNotionStatus(args)
+	case "notion-sync", "sync":
+		cmdNotionSync(args)
 	case "help", "--help", "-h":
 		printHelp()
 	default:
@@ -101,24 +187,29 @@ func printHelp() {
 %sUsage:%s
   cptool <command> [arguments]
 
-%sCommands:%s
-  %snew [name]%s                 Reset and setup active problem from template
+%sCore Commands:%s
+  %snew <name> [platform] [diff] [url/tags]%s
+                             Reset & initialize active problem (auto Notion sync with default values)
   %stest%s (or %srun%s)            Compile & test solution against sample test cases
   %sadd-test%s                  Add a new test case to the active problem
   %sbackup <platform> <name> [tags]%s
-                             Archive active problem to archive/<platform>/<name>
+                             Archive active problem and update Notion status to Solved
   %slist%s                      List all archived problems
   %ssearch <keyword>%s          Search through archived problems by name/tag
   %sstress [iterations]%s       Stress test active/main.go against brute.go with gen.go
-  %shelp%s                      Show this help screen
+
+%sNotion Integration Commands:%s
+  %sconfig --notion-token <KEY>%s
+                             Set your Notion API token
+  %sconfig --notion-db <ID>%s   Set your Notion Database ID (default: 19d7320760cc80d79115e483af59b450)
+  %snotion-status%s             Test connection and display Notion database fields
+  %snotion-sync%s               Manually sync active problem to Notion
 
 %sExamples:%s
-  cptool new 1000A_Watermelon
+  cptool new "Two Sum" leetcode easy "https://leetcode.com/problems/two-sum/" "Arrays,Hash Map"
+  cptool new 1000A_Watermelon codeforces
   cptool test
-  cptool add-test
-  cptool backup codeforces 1000A_Watermelon "math,brute force"
-  cptool search math
-  cptool stress 100
+  cptool backup leetcode "Two Sum" "Arrays,Hash Map"
 `,
 		colorCyan, colorReset,
 		colorBold, colorReset,
@@ -130,17 +221,51 @@ func printHelp() {
 		colorGreen, colorReset,
 		colorGreen, colorReset,
 		colorGreen, colorReset,
+		colorBold, colorReset,
+		colorGreen, colorReset,
+		colorGreen, colorReset,
+		colorGreen, colorReset,
 		colorGreen, colorReset,
 		colorBold, colorReset,
 	)
 }
 
+func parseNewArgs(args []string) (name, platform, difficulty, problemURL string, tags []string) {
+	difficulty = "Medium"
+	platform = "leetcode"
+
+	if len(args) == 0 {
+		name = "problem"
+		return
+	}
+
+	name = args[0]
+
+	for _, arg := range args[1:] {
+		lower := strings.ToLower(arg)
+		if strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://") {
+			problemURL = arg
+		} else if lower == "easy" || lower == "medium" || lower == "hard" {
+			difficulty = strings.Title(lower)
+		} else if lower == "leetcode" || lower == "codeforces" || lower == "atcoder" || lower == "cses" || lower == "hackerrank" || lower == "misc" {
+			platform = lower
+		} else {
+			// Check if comma-separated tags
+			for _, t := range strings.Split(arg, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					tags = append(tags, t)
+				}
+			}
+		}
+	}
+
+	return
+}
+
 func cmdNew(args []string) {
 	ws := getWorkspaceRoot()
-	problemName := "problem"
-	if len(args) > 0 {
-		problemName = args[0]
-	}
+	problemName, platform, difficulty, problemURL, tags := parseNewArgs(args)
 
 	activeDir := filepath.Join(ws, "active")
 	testsDir := filepath.Join(activeDir, "tests")
@@ -155,7 +280,6 @@ func cmdNew(args []string) {
 		return
 	}
 
-	// Write active/main.go
 	mainPath := filepath.Join(activeDir, "main.go")
 	if err := os.WriteFile(mainPath, templateData, 0644); err != nil {
 		fmt.Printf("%sError writing main.go: %v%s\n", colorRed, err, colorReset)
@@ -168,18 +292,48 @@ func cmdNew(args []string) {
 	_ = os.WriteFile(in1Path, []byte("4\n"), 0644)
 	_ = os.WriteFile(out1Path, []byte("4\n"), 0644)
 
-	// Save problem metadata
-	info := map[string]interface{}{
-		"problem_name": problemName,
-		"created_at":   time.Now().Format(time.RFC3339),
+	meta := ProblemMetadata{
+		ProblemName: problemName,
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		Platform:    platform,
+		Difficulty:  difficulty,
+		ProblemURL:  problemURL,
+		Tags:        tags,
 	}
-	infoData, _ := json.MarshalIndent(info, "", "  ")
-	_ = os.WriteFile(filepath.Join(activeDir, "problem.json"), infoData, 0644)
 
 	fmt.Printf("%s✔ Initialized new problem:%s %s%s%s\n", colorGreen, colorReset, colorBold, problemName, colorReset)
-	fmt.Printf("  • Solution: %s\n", mainPath)
+	fmt.Printf("  • Platform:   %s\n", platform)
+	fmt.Printf("  • Difficulty: %s\n", difficulty)
+	if problemURL != "" {
+		fmt.Printf("  • Link:       %s\n", problemURL)
+	}
+	if len(tags) > 0 {
+		fmt.Printf("  • Topics:     %s\n", strings.Join(tags, ", "))
+	}
+	fmt.Printf("  • Solution:   %s\n", mainPath)
 	fmt.Printf("  • Test input: %s\n", in1Path)
-	fmt.Printf("  • Test output: %s\n", out1Path)
+	fmt.Printf("  • Test output:%s\n", out1Path)
+
+	// Sync to Notion with all default values populated
+	cfg := loadConfig()
+	if cfg.NotionToken != "" {
+		fmt.Printf("%s⏳ Syncing problem to Notion database with defaults...%s\n", colorGray, colorReset)
+		pageID, pageURL, err := createNotionEntryWithDefaults(cfg, meta, "In Progress")
+		if err != nil {
+			fmt.Printf("%s⚠ Notion sync notice: %v%s\n", colorYellow, err, colorReset)
+		} else {
+			meta.NotionPageID = pageID
+			meta.NotionURL = pageURL
+			fmt.Printf("%s✔ Created Notion database entry:%s %s\n", colorGreen, colorReset, pageURL)
+		}
+	} else {
+		fmt.Printf("%s💡 Notion Auto-Sync: Set your token with '%scptool config --notion-token <TOKEN>%s' to auto-create Notion entries.%s\n",
+			colorGray, colorCyan, colorGray, colorReset)
+	}
+
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(filepath.Join(activeDir, "problem.json"), metaData, 0644)
+
 	fmt.Printf("\n%sRun '%scptool test%s' or '%scprun%s' to compile and test.%s\n", colorGray, colorCyan, colorGray, colorCyan, colorGray, colorReset)
 }
 
@@ -193,7 +347,6 @@ func cmdTest(args []string) {
 		return
 	}
 
-	// Compile
 	tmpBinary := filepath.Join(os.TempDir(), fmt.Sprintf("cp_sol_%d", time.Now().UnixNano()))
 	defer os.Remove(tmpBinary)
 
@@ -210,7 +363,6 @@ func cmdTest(args []string) {
 	compileDuration := time.Since(compileStart)
 	fmt.Printf("%s✔ Compiled successfully%s %s(%dms)%s\n\n", colorGreen, colorReset, colorGray, compileDuration.Milliseconds(), colorReset)
 
-	// Discover test cases
 	testsDir := filepath.Join(activeDir, "tests")
 	files, err := os.ReadDir(testsDir)
 	if err != nil {
@@ -293,7 +445,6 @@ func cmdTest(args []string) {
 		}
 
 		expectedStr := strings.TrimSpace(string(expectedData))
-		// Normalize line endings
 		normActual := normalizeWhitespace(actualStr)
 		normExpected := normalizeWhitespace(expectedStr)
 
@@ -353,7 +504,6 @@ func cmdAddTest(args []string) {
 	testsDir := filepath.Join(ws, "active", "tests")
 	_ = os.MkdirAll(testsDir, 0755)
 
-	// Find next test index
 	files, _ := os.ReadDir(testsDir)
 	maxIdx := 0
 	re := regexp.MustCompile(`^in(\d+)\.txt$`)
@@ -382,7 +532,6 @@ func cmdAddTest(args []string) {
 		return
 	}
 
-	// Create empty template test files
 	_ = os.WriteFile(inPath, []byte(""), 0644)
 	_ = os.WriteFile(outPath, []byte(""), 0644)
 	fmt.Printf("%s✔ Created Test #%d:%s\n", colorGreen, nextIdx, colorReset)
@@ -393,7 +542,7 @@ func cmdAddTest(args []string) {
 func cmdBackup(args []string) {
 	if len(args) < 2 {
 		fmt.Printf("%sUsage: cptool backup <platform> <problem_name> [tags...]%s\n", colorRed, colorReset)
-		fmt.Printf("Example: cptool backup codeforces 1000A_Watermelon \"math,greedy\"\n")
+		fmt.Printf("Example: cptool backup leetcode \"Two Sum\" \"Arrays,Hash Map\"\n")
 		return
 	}
 
@@ -419,12 +568,50 @@ func cmdBackup(args []string) {
 		return
 	}
 
+	var meta ProblemMetadata
+	if metaData, err := os.ReadFile(filepath.Join(activeDir, "problem.json")); err == nil {
+		_ = json.Unmarshal(metaData, &meta)
+	}
+	if len(tags) > 0 {
+		meta.Tags = tags
+	}
+
 	dateFolder := time.Now().Format("2006-01-02")
-	destDir := filepath.Join(ws, "archive", platform, fmt.Sprintf("%s_%s", dateFolder, problemName))
+	folderSafeName := sanitizeFilename(problemName)
+	destDir := filepath.Join(ws, "archive", platform, fmt.Sprintf("%s_%s", dateFolder, folderSafeName))
 	_ = os.MkdirAll(destDir, 0755)
 
-	// Copy all files from active to archive
+	// Copy active files to archive
 	copyDir(activeDir, destDir)
+
+	// Generate GitHub Solution Link if repository exists
+	var solutionURL string
+	gitURL := getGitRepoURL()
+	relDest, _ := filepath.Rel(ws, destDir)
+	if gitURL != "" {
+		solutionURL = fmt.Sprintf("%s/tree/main/%s", gitURL, relDest)
+	}
+
+	// Update Notion status
+	cfg := loadConfig()
+	if cfg.NotionToken != "" {
+		if meta.NotionPageID != "" {
+			fmt.Printf("%s⏳ Updating Notion entry to Solved with tags and links...%s\n", colorGray, colorReset)
+			if err := updateNotionEntryWithDefaults(cfg, meta.NotionPageID, "Solved", meta.Tags, solutionURL); err != nil {
+				fmt.Printf("%s⚠ Notion update notice: %v%s\n", colorYellow, err, colorReset)
+			} else {
+				fmt.Printf("%s✔ Updated Notion page to Solved!%s\n", colorGreen, colorReset)
+			}
+		} else {
+			fmt.Printf("%s⏳ Creating Notion archive entry...%s\n", colorGray, colorReset)
+			pageID, pageURL, err := createNotionEntryWithDefaults(cfg, meta, "Solved")
+			if err == nil {
+				meta.NotionPageID = pageID
+				meta.NotionURL = pageURL
+				fmt.Printf("%s✔ Created Notion database entry: %s%s\n", colorGreen, pageURL, colorReset)
+			}
+		}
+	}
 
 	// Add entry to archive/index.json
 	indexPath := filepath.Join(ws, "archive", "index.json")
@@ -433,14 +620,15 @@ func cmdBackup(args []string) {
 		_ = json.Unmarshal(data, &entries)
 	}
 
-	relPath, _ := filepath.Rel(ws, destDir)
 	newEntry := ArchiveEntry{
-		Platform:    platform,
-		ProblemName: problemName,
-		Path:        relPath,
-		Date:        dateFolder,
-		Tags:        tags,
-		Timestamp:   time.Now(),
+		Platform:     platform,
+		ProblemName:  problemName,
+		Path:         relDest,
+		Date:         dateFolder,
+		Tags:         meta.Tags,
+		NotionPageID: meta.NotionPageID,
+		NotionURL:    meta.NotionURL,
+		Timestamp:    time.Now(),
 	}
 	entries = append([]ArchiveEntry{newEntry}, entries...)
 
@@ -450,10 +638,19 @@ func cmdBackup(args []string) {
 	fmt.Printf("%s✔ Problem successfully archived!%s\n", colorGreen, colorReset)
 	fmt.Printf("  • Platform: %s%s%s\n", colorBold, platform, colorReset)
 	fmt.Printf("  • Problem:  %s%s%s\n", colorBold, problemName, colorReset)
-	if len(tags) > 0 {
-		fmt.Printf("  • Tags:     %s%s%s\n", colorCyan, strings.Join(tags, ", "), colorReset)
+	if len(meta.Tags) > 0 {
+		fmt.Printf("  • Topics:   %s%s%s\n", colorCyan, strings.Join(meta.Tags, ", "), colorReset)
+	}
+	if solutionURL != "" {
+		fmt.Printf("  • Solution: %s\n", solutionURL)
 	}
 	fmt.Printf("  • Location: %s\n", destDir)
+}
+
+func sanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, " ", "_")
+	reg := regexp.MustCompile(`[^a-zA-Z0-9_\-]+`)
+	return reg.ReplaceAllString(name, "")
 }
 
 func cmdList(args []string) {
@@ -532,9 +729,12 @@ func cmdSearch(args []string) {
 	for _, e := range matched {
 		fmt.Printf("  • %s[%s]%s %s%s%s (%s)\n", colorCyan, e.Platform, colorReset, colorBold, e.ProblemName, colorReset, e.Date)
 		if len(e.Tags) > 0 {
-			fmt.Printf("    Tags: %s%s%s\n", colorYellow, strings.Join(e.Tags, ", "), colorReset)
+			fmt.Printf("    Tags:   %s%s%s\n", colorYellow, strings.Join(e.Tags, ", "), colorReset)
 		}
-		fmt.Printf("    Path: %s\n\n", filepath.Join(ws, e.Path))
+		if e.NotionURL != "" {
+			fmt.Printf("    Notion: %s\n", e.NotionURL)
+		}
+		fmt.Printf("    Path:   %s\n\n", filepath.Join(ws, e.Path))
 	}
 }
 
@@ -589,19 +789,16 @@ func cmdStress(args []string) {
 	fmt.Printf("%s🚀 Starting stress testing (%d iterations)...%s\n\n", colorBold, maxIters, colorReset)
 
 	for i := 1; i <= maxIters; i++ {
-		// Generate random test
 		genOut, err := exec.Command(binGen).Output()
 		if err != nil {
 			fmt.Printf("%sGenerator failed at iteration %d%s\n", colorRed, i, colorReset)
 			return
 		}
 
-		// Run Main
 		cmdM := exec.Command(binMain)
 		cmdM.Stdin = bytes.NewReader(genOut)
 		outMain, errM := cmdM.Output()
 
-		// Run Brute
 		cmdB := exec.Command(binBrute)
 		cmdB.Stdin = bytes.NewReader(genOut)
 		outBrute, errB := cmdB.Output()
@@ -621,7 +818,6 @@ func cmdStress(args []string) {
 			fmt.Printf("%sMain (Optimal) Output:%s\n%s\n\n", colorRed, colorReset, sMain)
 			fmt.Printf("%sBrute Force Output:%s\n%s\n\n", colorGreen, colorReset, sBrute)
 
-			// Save counterexample into active/tests/
 			_ = os.WriteFile(filepath.Join(activeDir, "tests", "stress_in.txt"), genOut, 0644)
 			_ = os.WriteFile(filepath.Join(activeDir, "tests", "stress_expected.txt"), outBrute, 0644)
 			fmt.Printf("%sSaved counterexample to active/tests/stress_in.txt%s\n", colorCyan, colorReset)
@@ -634,6 +830,119 @@ func cmdStress(args []string) {
 	}
 
 	fmt.Printf("\n%s🎉 STRESS TEST PASSED: No discrepancies found in %d iterations!%s\n", colorGreen, maxIters, colorReset)
+}
+
+func cmdConfig(args []string) {
+	cfg := loadConfig()
+
+	if len(args) == 0 {
+		fmt.Printf("%s⚙ Current cptool Configuration:%s\n", colorBold, colorReset)
+		tokenMasked := "(not set)"
+		if cfg.NotionToken != "" {
+			if len(cfg.NotionToken) > 10 {
+				tokenMasked = cfg.NotionToken[:6] + "..." + cfg.NotionToken[len(cfg.NotionToken)-4:]
+			} else {
+				tokenMasked = "***"
+			}
+		}
+		fmt.Printf("  • Notion Database ID: %s%s%s\n", colorCyan, cfg.NotionDatabaseID, colorReset)
+		fmt.Printf("  • Notion API Token:   %s%s%s\n", colorCyan, tokenMasked, colorReset)
+		fmt.Printf("  • Config File:        %s\n\n", getConfigPath())
+		fmt.Printf("Usage to update:\n")
+		fmt.Printf("  cptool config --notion-token <TOKEN>\n")
+		fmt.Printf("  cptool config --notion-db <DATABASE_ID>\n")
+		return
+	}
+
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--notion-token" || args[i] == "-token" || args[i] == "-t") && i+1 < len(args) {
+			cfg.NotionToken = args[i+1]
+			i++
+		} else if (args[i] == "--notion-db" || args[i] == "-db") && i+1 < len(args) {
+			cfg.NotionDatabaseID = args[i+1]
+			i++
+		}
+	}
+
+	if err := saveConfig(cfg); err != nil {
+		fmt.Printf("%sError saving config: %v%s\n", colorRed, err, colorReset)
+		return
+	}
+
+	fmt.Printf("%s✔ Configuration saved successfully to %s%s\n", colorGreen, getConfigPath(), colorReset)
+}
+
+func cmdNotionStatus(args []string) {
+	cfg := loadConfig()
+	if cfg.NotionToken == "" {
+		fmt.Printf("%sNo Notion API Token configured.%s\n", colorYellow, colorReset)
+		fmt.Printf("Set one with: %scptool config --notion-token <YOUR_TOKEN>%s\n", colorCyan, colorReset)
+		return
+	}
+
+	fmt.Printf("%s🔍 Connecting to Notion Database ID: %s...%s\n", colorGray, cfg.NotionDatabaseID, colorReset)
+	dbInfo, err := getNotionDatabase(cfg)
+	if err != nil {
+		fmt.Printf("%s✖ Failed to connect to Notion: %v%s\n", colorRed, err, colorReset)
+		return
+	}
+
+	fmt.Printf("%s✔ Successfully connected to Notion Database!%s\n\n", colorGreen, colorReset)
+	if title, ok := dbInfo["title"].([]interface{}); ok && len(title) > 0 {
+		if textObj, ok := title[0].(map[string]interface{}); ok {
+			if plain, ok := textObj["plain_text"].(string); ok {
+				fmt.Printf("  • Title: %s%s%s\n", colorBold, plain, colorReset)
+			}
+		}
+	}
+	if url, ok := dbInfo["url"].(string); ok {
+		fmt.Printf("  • URL:   %s\n", url)
+	}
+
+	if props, ok := dbInfo["properties"].(map[string]interface{}); ok {
+		fmt.Printf("\n%sDetected Database Properties (%d):%s\n", colorBold, len(props), colorReset)
+		for name, p := range props {
+			if pMap, ok := p.(map[string]interface{}); ok {
+				pType, _ := pMap["type"].(string)
+				fmt.Printf("  • %s%-26s%s (type: %s)\n", colorCyan, name, colorReset, pType)
+			}
+		}
+	}
+	fmt.Println()
+}
+
+func cmdNotionSync(args []string) {
+	ws := getWorkspaceRoot()
+	activeDir := filepath.Join(ws, "active")
+
+	var meta ProblemMetadata
+	data, err := os.ReadFile(filepath.Join(activeDir, "problem.json"))
+	if err != nil {
+		fmt.Printf("%sNo active problem found.%s\n", colorRed, colorReset)
+		return
+	}
+	_ = json.Unmarshal(data, &meta)
+
+	cfg := loadConfig()
+	if cfg.NotionToken == "" {
+		fmt.Printf("%sNo Notion token configured. Set with 'cptool config --notion-token <TOKEN>'%s\n", colorRed, colorReset)
+		return
+	}
+
+	fmt.Printf("%s⏳ Syncing %s to Notion with full default properties...%s\n", colorGray, meta.ProblemName, colorReset)
+	pageID, pageURL, err := createNotionEntryWithDefaults(cfg, meta, "In Progress")
+	if err != nil {
+		fmt.Printf("%s✖ Notion sync failed: %v%s\n", colorRed, err, colorReset)
+		return
+	}
+
+	meta.NotionPageID = pageID
+	meta.NotionURL = pageURL
+	updatedData, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(filepath.Join(activeDir, "problem.json"), updatedData, 0644)
+
+	fmt.Printf("%s✔ Successfully synced to Notion!%s\n", colorGreen, colorReset)
+	fmt.Printf("  • Page URL: %s\n", pageURL)
 }
 
 func copyDir(src, dst string) {
@@ -653,3 +962,302 @@ func copyDir(src, dst string) {
 	}
 }
 
+// ==========================================
+// Notion API Client Implementation
+// ==========================================
+
+func formatNotionUUID(id string) string {
+	clean := strings.ReplaceAll(id, "-", "")
+	if len(clean) == 32 {
+		return fmt.Sprintf("%s-%s-%s-%s-%s", clean[0:8], clean[8:12], clean[12:16], clean[16:20], clean[20:32])
+	}
+	return id
+}
+
+func getNotionDatabase(cfg Config) (map[string]interface{}, error) {
+	dbID := formatNotionUUID(cfg.NotionDatabaseID)
+	req, err := http.NewRequest("GET", "https://api.notion.com/v1/databases/"+dbID, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.NotionToken)
+	req.Header.Set("Notion-Version", "2022-06-28")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// normalizeTopic matches tag against known Notion multi-select options
+func normalizeTopics(inputTags []string, availableOptions []string) []string {
+	var res []string
+	for _, t := range inputTags {
+		tTrim := strings.TrimSpace(t)
+		if tTrim == "" {
+			continue
+		}
+		matched := false
+		for _, opt := range availableOptions {
+			if strings.EqualFold(opt, tTrim) {
+				res = append(res, opt)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			// Title case fallback
+			res = append(res, strings.Title(tTrim))
+		}
+	}
+	return res
+}
+
+func createNotionEntryWithDefaults(cfg Config, meta ProblemMetadata, status string) (string, string, error) {
+	dbID := formatNotionUUID(cfg.NotionDatabaseID)
+	dbInfo, err := getNotionDatabase(cfg)
+	if err != nil {
+		return "", "", err
+	}
+
+	rawProps, _ := dbInfo["properties"].(map[string]interface{})
+	props := make(map[string]interface{})
+
+	// 1. Problem Title (title)
+	for name, v := range rawProps {
+		vMap, _ := v.(map[string]interface{})
+		pType, _ := vMap["type"].(string)
+
+		if pType == "title" {
+			props[name] = map[string]interface{}{
+				"title": []map[string]interface{}{
+					{
+						"text": map[string]string{
+							"content": meta.ProblemName,
+						},
+					},
+				},
+			}
+		}
+
+		// 2. Current Status (select / status) -> 'In Progress' / 'Solved'
+		if (strings.EqualFold(name, "Current Status") || strings.EqualFold(name, "Status")) && (pType == "select" || pType == "status") {
+			statusVal := "In Progress"
+			if status != "" {
+				statusVal = status
+			}
+			props[name] = map[string]interface{}{
+				pType: map[string]string{"name": statusVal},
+			}
+		}
+
+		// 3. Date (date) -> Today
+		if (strings.EqualFold(name, "Date") || strings.EqualFold(name, "Created")) && pType == "date" {
+			props[name] = map[string]interface{}{
+				"date": map[string]string{"start": time.Now().Format("2006-01-02")},
+			}
+		}
+
+		// 4. Difficulty Level (select) -> Easy / Medium / Hard
+		if strings.EqualFold(name, "Difficulty Level") && pType == "select" {
+			diffVal := "Medium"
+			if meta.Difficulty != "" {
+				diffVal = strings.Title(strings.ToLower(meta.Difficulty))
+			}
+			props[name] = map[string]interface{}{
+				"select": map[string]string{"name": diffVal},
+			}
+		}
+
+		// 5. Submission Attempts (number) -> default 1
+		if (strings.EqualFold(name, "Submission Attempts") || strings.EqualFold(name, "Attempts")) && pType == "number" {
+			props[name] = map[string]interface{}{
+				"number": 1,
+			}
+		}
+
+		// 6. Review Needed? (checkbox) -> default false
+		if strings.EqualFold(name, "Review Needed?") && pType == "checkbox" {
+			props[name] = map[string]interface{}{
+				"checkbox": false,
+			}
+		}
+
+		// 7. LeetCode Contest Problem? (checkbox)
+		if strings.EqualFold(name, "LeetCode Contest Problem?") && pType == "checkbox" {
+			isContest := strings.Contains(strings.ToLower(meta.Platform), "contest")
+			props[name] = map[string]interface{}{
+				"checkbox": isContest,
+			}
+		}
+
+		// 8. Problem Link (url)
+		if strings.EqualFold(name, "Problem Link") && pType == "url" && meta.ProblemURL != "" {
+			props[name] = map[string]interface{}{
+				"url": meta.ProblemURL,
+			}
+		}
+
+		// 9. Topics (multi_select)
+		if (strings.EqualFold(name, "Topics") || strings.EqualFold(name, "Tags")) && pType == "multi_select" {
+			var availableOptions []string
+			if selObj, ok := vMap["multi_select"].(map[string]interface{}); ok {
+				if opts, ok := selObj["options"].([]interface{}); ok {
+					for _, opt := range opts {
+						if optMap, ok := opt.(map[string]interface{}); ok {
+							if optName, ok := optMap["name"].(string); ok {
+								availableOptions = append(availableOptions, optName)
+							}
+						}
+					}
+				}
+			}
+
+			normTags := normalizeTopics(meta.Tags, availableOptions)
+			var multiSelect []map[string]string
+			for _, t := range normTags {
+				multiSelect = append(multiSelect, map[string]string{"name": t})
+			}
+			if len(multiSelect) > 0 {
+				props[name] = map[string]interface{}{
+					"multi_select": multiSelect,
+				}
+			}
+		}
+	}
+
+	reqBody := map[string]interface{}{
+		"parent": map[string]string{
+			"database_id": dbID,
+		},
+		"properties": props,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", "", err
+	}
+
+	req, err := http.NewRequest("POST", "https://api.notion.com/v1/pages", bytes.NewReader(jsonData))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.NotionToken)
+	req.Header.Set("Notion-Version", "2022-06-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return "", "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var resObj map[string]interface{}
+	_ = json.Unmarshal(body, &resObj)
+
+	pageID, _ := resObj["id"].(string)
+	pageURL, _ := resObj["url"].(string)
+
+	return pageID, pageURL, nil
+}
+
+func updateNotionEntryWithDefaults(cfg Config, pageID, status string, tags []string, solutionURL string) error {
+	pageID = formatNotionUUID(pageID)
+
+	reqGet, err := http.NewRequest("GET", "https://api.notion.com/v1/pages/"+pageID, nil)
+	if err != nil {
+		return err
+	}
+	reqGet.Header.Set("Authorization", "Bearer "+cfg.NotionToken)
+	reqGet.Header.Set("Notion-Version", "2022-06-28")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	respGet, err := client.Do(reqGet)
+	if err != nil {
+		return err
+	}
+	defer respGet.Body.Close()
+
+	bodyGet, _ := io.ReadAll(respGet.Body)
+	var pageObj map[string]interface{}
+	_ = json.Unmarshal(bodyGet, &pageObj)
+
+	rawProps, _ := pageObj["properties"].(map[string]interface{})
+	props := make(map[string]interface{})
+
+	for name, v := range rawProps {
+		vMap, _ := v.(map[string]interface{})
+		pType, _ := vMap["type"].(string)
+
+		if (strings.EqualFold(name, "Current Status") || strings.EqualFold(name, "Status")) && (pType == "select" || pType == "status") {
+			props[name] = map[string]interface{}{
+				pType: map[string]string{"name": status},
+			}
+		}
+
+		if (strings.EqualFold(name, "Topics") || strings.EqualFold(name, "Tags")) && pType == "multi_select" && len(tags) > 0 {
+			var multiSelect []map[string]string
+			for _, t := range tags {
+				multiSelect = append(multiSelect, map[string]string{"name": strings.Title(strings.TrimSpace(t))})
+			}
+			props[name] = map[string]interface{}{
+				"multi_select": multiSelect,
+			}
+		}
+
+		if (strings.EqualFold(name, "Solution Link") || strings.EqualFold(name, "Solution")) && pType == "url" && solutionURL != "" {
+			props[name] = map[string]interface{}{
+				"url": solutionURL,
+			}
+		}
+	}
+
+	if len(props) == 0 {
+		return nil
+	}
+
+	reqBody := map[string]interface{}{
+		"properties": props,
+	}
+	jsonData, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequest("PATCH", "https://api.notion.com/v1/pages/"+pageID, bytes.NewReader(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.NotionToken)
+	req.Header.Set("Notion-Version", "2022-06-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}

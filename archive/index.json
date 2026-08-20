@@ -1,5 +1,18 @@
 [
   {
+    "platform": "leetcode",
+    "problem_name": "Two Sum",
+    "path": "archive/leetcode/2026-08-20_Two_Sum",
+    "date": "2026-08-20",
+    "tags": [
+      "Arrays",
+      "Hash Map"
+    ],
+    "notion_page_id": "3c273207-60cc-819f-a4ec-f32055723ab5",
+    "notion_url": "https://app.notion.com/p/Two-Sum-3c27320760cc819fa4ecf32055723ab5",
+    "timestamp": "2026-08-20T23:52:19.602177+05:30"
+  },
+  {
     "platform": "codeforces",
     "problem_name": "starter_problem",
     "path": "archive/codeforces/2026-08-20_starter_problem",

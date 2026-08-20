@@ -27,6 +27,11 @@ alias cplist="$CP_WORKSPACE/bin/cptool list"
 alias cpsearch="$CP_WORKSPACE/bin/cptool search"
 alias cpstress="$CP_WORKSPACE/bin/cptool stress"
 
+# Notion Database Sync
+alias cpnotion="$CP_WORKSPACE/bin/cptool notion-status"
+alias cpsync="$CP_WORKSPACE/bin/cptool notion-sync"
+alias cpconfig="$CP_WORKSPACE/bin/cptool config"
+
 # Open active problem in VS Code / Editor (if available)
 cpopen() {
     if command -v code >/dev/null 2>&1; then
@@ -48,15 +53,20 @@ Navigation:
   cpopen               Open active/main.go in code editor
 
 Problem Lifecycle:
-  cpnew <name>         Create new problem from template
+  cpnew <name> [plat]  Create new problem (auto syncs to Notion database)
   cprun / cptest       Compile & run tests against in1.txt, in2.txt...
   cpdebug              Run tests with debug logs enabled (DEBUG=1)
   cpadd [in] [out]     Add new test case
   cpbackup <platform> <name> [tags]
-                       Archive active problem (e.g. cpbackup cf 1000A "math")
+                       Archive active problem & update Notion status to Solved
   cplist               List all archived problems
   cpsearch <keyword>   Search archived solutions
   cpstress [count]     Stress test active/main.go vs brute.go
+
+Notion Integration:
+  cpconfig             View or edit Notion configuration
+  cpnotion             Test connection to Notion database
+  cpsync               Manually sync active problem to Notion
 
 Cheatsheet:
   view $CP_WORKSPACE/CHEATSHEET.md
